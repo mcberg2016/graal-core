@@ -109,6 +109,9 @@ public final class GraalOptions {
     @Option(help = "", type = OptionType.Debug)
     public static final OptionValue<Boolean> LoopUnswitch = new OptionValue<>(true);
 
+    @Option(help = "", type = OptionType.Debug)
+    public static final OptionValue<Boolean> LoopInsertPrePost = new OptionValue<>(true);
+
     @Option(help = "", type = OptionType.Expert)
     public static final OptionValue<Float> MinimumPeelProbability = new OptionValue<>(0.35f);
 

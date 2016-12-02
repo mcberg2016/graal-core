@@ -32,6 +32,7 @@ import com.oracle.graal.loop.InductionVariable.Direction;
 import com.oracle.graal.nodes.AbstractBeginNode;
 import com.oracle.graal.nodes.ConstantNode;
 import com.oracle.graal.nodes.GuardNode;
+import com.oracle.graal.nodes.IfNode;
 import com.oracle.graal.nodes.StructuredGraph;
 import com.oracle.graal.nodes.ValueNode;
 import com.oracle.graal.nodes.calc.CompareNode;
@@ -51,13 +52,15 @@ public class CountedLoopInfo {
     private ValueNode end;
     private boolean oneOff;
     private AbstractBeginNode body;
+    private IfNode ifNode;
 
-    CountedLoopInfo(LoopEx loop, InductionVariable iv, ValueNode end, boolean oneOff, AbstractBeginNode body) {
+    CountedLoopInfo(LoopEx loop, InductionVariable iv, IfNode ifNode, ValueNode end, boolean oneOff, AbstractBeginNode body) {
         this.loop = loop;
         this.iv = iv;
         this.end = end;
         this.oneOff = oneOff;
         this.body = body;
+        this.ifNode = ifNode;
     }
 
     public ValueNode maxTripCountNode() {
@@ -127,6 +130,10 @@ public class CountedLoopInfo {
 
     public ValueNode getLimit() {
         return end;
+    }
+
+    public IfNode getLimitTest() {
+        return ifNode;
     }
 
     public ValueNode getStart() {

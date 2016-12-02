@@ -25,30 +25,58 @@ package com.oracle.graal.loop;
 import static com.oracle.graal.compiler.common.GraalOptions.LoopMaxUnswitch;
 import static com.oracle.graal.compiler.common.GraalOptions.MaximumDesiredSize;
 import static com.oracle.graal.compiler.common.GraalOptions.MinimumPeelProbability;
+import static jdk.vm.ci.meta.DeoptimizationReason.BoundsCheckException;
 
 import java.util.List;
 
+import com.oracle.graal.compiler.common.type.IntegerStamp;
+import com.oracle.graal.compiler.common.type.Stamp;
+import com.oracle.graal.compiler.common.type.StampFactory;
 import com.oracle.graal.debug.Debug;
 import com.oracle.graal.debug.DebugCounter;
 import com.oracle.graal.graph.Node;
 import com.oracle.graal.graph.NodeBitMap;
 import com.oracle.graal.nodes.AbstractBeginNode;
+import com.oracle.graal.nodes.ConstantNode;
 import com.oracle.graal.nodes.ControlSplitNode;
 import com.oracle.graal.nodes.DeoptimizeNode;
 import com.oracle.graal.nodes.FixedNode;
 import com.oracle.graal.nodes.FixedWithNextNode;
+import com.oracle.graal.nodes.FrameState;
+import com.oracle.graal.nodes.IfNode;
+import com.oracle.graal.nodes.LogicNode;
+import com.oracle.graal.nodes.GuardNode;
 import com.oracle.graal.nodes.LoopBeginNode;
 import com.oracle.graal.nodes.MergeNode;
+import com.oracle.graal.nodes.PiNode;
+import com.oracle.graal.nodes.StructuredGraph;
+import com.oracle.graal.nodes.ValueNode;
 import com.oracle.graal.nodes.VirtualState;
 import com.oracle.graal.nodes.VirtualState.VirtualClosure;
+import com.oracle.graal.nodes.calc.CompareNode;
+import com.oracle.graal.nodes.calc.IntegerBelowNode;
 import com.oracle.graal.nodes.cfg.Block;
 import com.oracle.graal.nodes.cfg.ControlFlowGraph;
+import com.oracle.graal.nodes.debug.ControlFlowAnchorNode;
+import com.oracle.graal.nodes.extended.GuardingNode;
+import com.oracle.graal.nodes.java.AbstractNewArrayNode;
+import com.oracle.graal.nodes.java.AccessIndexedNode;
 import com.oracle.graal.nodes.java.TypeSwitchNode;
+import com.oracle.graal.nodes.memory.ReadNode;
+import com.oracle.graal.nodes.memory.WriteNode;
+import com.oracle.graal.nodes.memory.HeapAccess.BarrierType;
+import com.oracle.graal.nodes.memory.address.AddressNode;
+import com.oracle.graal.nodes.memory.address.OffsetAddressNode;
+import com.oracle.graal.nodes.spi.LoweringTool;
+import com.oracle.graal.nodes.java.LoadIndexedNode;
 import com.oracle.graal.options.Option;
 import com.oracle.graal.options.OptionType;
 import com.oracle.graal.options.OptionValue;
 
+import jdk.vm.ci.code.BytecodeFrame;
 import jdk.vm.ci.meta.MetaAccessProvider;
+import jdk.vm.ci.meta.ConstantReflectionProvider;
+import jdk.vm.ci.code.TargetDescription;
 
 public class DefaultLoopPolicies implements LoopPolicies {
     @Option(help = "", type = OptionType.Expert) public static final OptionValue<Integer> LoopUnswitchMaxIncrease = new OptionValue<>(500);
@@ -58,6 +86,9 @@ public class DefaultLoopPolicies implements LoopPolicies {
     @Option(help = "", type = OptionType.Expert) public static final OptionValue<Integer> FullUnrollMaxNodes = new OptionValue<>(300);
     @Option(help = "", type = OptionType.Expert) public static final OptionValue<Integer> FullUnrollMaxIterations = new OptionValue<>(600);
     @Option(help = "", type = OptionType.Expert) public static final OptionValue<Integer> ExactFullUnrollMaxNodes = new OptionValue<>(1200);
+
+    @Option(help = "", type = OptionType.Expert) public static final OptionValue<Integer> UnrollMaxIterations = new OptionValue<>(16);
+    @Option(help = "", type = OptionType.Expert) public static final OptionValue<Boolean> EliminateRangeChecks = new OptionValue<>(true);
 
     @Override
     public boolean shouldPeel(LoopEx loop, ControlFlowGraph cfg, MetaAccessProvider metaAccess) {
@@ -87,6 +118,84 @@ public class DefaultLoopPolicies implements LoopPolicies {
         } else {
             return false;
         }
+    }
+
+    @Override
+    public boolean shouldPartiallyUnroll(LoopEx loop) {
+        if (!loop.isCounted()) {
+            return false;
+        }
+        CountedLoopInfo counted = loop.counted();
+        int maxNodes = (counted.isExactTripCount() && counted.isConstantExactTripCount()) ? ExactFullUnrollMaxNodes.getValue() : FullUnrollMaxNodes.getValue();
+        maxNodes = Math.min(maxNodes, Math.max(0, MaximumDesiredSize.getValue() - loop.loopBegin().graph().getNodeCount()));
+        int size = Math.max(1, loop.size() - 1 - loop.loopBegin().phis().count());
+        int unrollFactor = 1; // fill in with counted data
+        if (unrollFactor < UnrollMaxIterations.getValue() && size * unrollFactor <= maxNodes) {
+            // check whether we're allowed to unroll this loop
+            for (Node node : loop.inside().nodes()) {
+                if (node instanceof ControlFlowAnchorNode) {
+                    return false;
+                }
+                if (node instanceof FrameState) {
+                    FrameState frameState = (FrameState) node;
+                    if (frameState.bci == BytecodeFrame.AFTER_EXCEPTION_BCI || frameState.bci == BytecodeFrame.UNWIND_BCI) {
+                        return false;
+                    }
+                }
+            }
+            return true;
+        } else {
+            return false;
+        }
+    }
+
+    @Override
+    public boolean shouldEliminateRangeChecks(LoopEx loop, ConstantReflectionProvider constantReflection) {
+        if (!loop.isCounted()) {
+            return false;
+        }
+        CountedLoopInfo counted = loop.counted();
+        if (EliminateRangeChecks.getValue()) {
+            // Check if there are any range checks to eliminate.
+            // We do not need to worry about loop exits as unswitching has already happened.
+            int rangeCheckCount = 0;
+            InductionVariable iv = null;
+            for (Node node : loop.inside().nodes()) {
+                if (node instanceof ReadNode) {
+                    ReadNode readNode = (ReadNode) node;
+                    if (readNode.getGuard() != null) {
+                        GuardingNode guarding = readNode.getGuard();
+                        if (guarding instanceof GuardNode) {
+                            GuardNode guard = (GuardNode) guarding;
+                            if (guard.getReason() == BoundsCheckException) {
+                                iv = counted.getCounter();
+                                ValueNode init = counted.getStart();
+                                rangeCheckCount++;
+                            }
+                        }
+                    }
+                } else if (node instanceof WriteNode) {
+                    WriteNode writeNode = (WriteNode) node;
+                    if (writeNode.getGuard() != null) {
+                        GuardingNode guarding = writeNode.getGuard();
+                        if (guarding instanceof GuardNode) {
+                            GuardNode guard = (GuardNode) guarding;
+                            if (guard.getReason() == BoundsCheckException) {
+                                iv = counted.getCounter();
+                                ValueNode init = counted.getStart();
+                                rangeCheckCount++;
+                            }
+                        }
+                    }
+                }
+            }
+            if (rangeCheckCount > 0) {
+                return true;
+            }
+        } else {
+            return false;
+        }
+        return false;
     }
 
     @Override

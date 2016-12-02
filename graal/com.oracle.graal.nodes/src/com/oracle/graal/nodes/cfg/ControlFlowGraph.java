@@ -214,8 +214,10 @@ public final class ControlFlowGraph implements AbstractControlFlowGraph<Block> {
     private void identifyBlocks() {
         // Find all block headers.
         int numBlocks = 0;
+        List<Block> blocks = new ArrayList<>();
         for (AbstractBeginNode begin : graph.getNodes(AbstractBeginNode.TYPE)) {
             Block block = new Block(begin);
+            blocks.add(block);
             identifyBlock(block);
             numBlocks++;
         }
@@ -253,7 +255,8 @@ public final class ControlFlowGraph implements AbstractControlFlowGraph<Block> {
                     falseSucc.setPredecessors(ifPred);
                 } else if (last instanceof LoopEndNode) {
                     LoopEndNode loopEndNode = (LoopEndNode) last;
-                    block.setSuccessors(new Block[]{nodeMap.get(loopEndNode.loopBegin())});
+                    Block loopSucc = nodeMap.get(loopEndNode.loopBegin());
+                    block.setSuccessors(new Block[]{loopSucc});
                     // Nothing to do push onto the stack.
                 } else {
                     assert !(last instanceof AbstractEndNode) : "Algorithm only supports EndNode and LoopEndNode.";
@@ -291,10 +294,21 @@ public final class ControlFlowGraph implements AbstractControlFlowGraph<Block> {
                 int index = numBlocks - count;
                 stack[index] = block;
                 block.setId(index);
+            } else if (id >= 0 && id < numBlocks) {
+                // A multi-edge join can validly do this, where only the stack changes.
+                --tos;
             } else {
                 throw GraalError.shouldNotReachHere();
             }
         } while (tos >= 0);
+
+        for (Block block : blocks) {
+            if (block.getId() == BLOCK_ID_INITIAL) {
+                System.out.println("block never processed");
+            } else if (block.getId() == BLOCK_ID_VISITED) {
+                System.out.println("block visited but never processed");
+            }
+        }
 
         // Compute reverse postorder and number blocks.
         assert count == numBlocks : "all blocks must be reachable";

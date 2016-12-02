@@ -45,6 +45,7 @@ public final class LoopBeginNode extends AbstractMergeNode implements IterableNo
     protected double loopFrequency;
     protected int nextEndIndex;
     protected int unswitches;
+    protected int splits;
     protected int inversionCount;
 
     /** See {@link LoopEndNode#canSafepoint} for more information. */
@@ -55,6 +56,8 @@ public final class LoopBeginNode extends AbstractMergeNode implements IterableNo
     public LoopBeginNode() {
         super(TYPE);
         loopFrequency = 1;
+        unswitches = 0;
+        splits = 0;
         this.canEndsSafepoint = true;
     }
 
@@ -203,8 +206,16 @@ public final class LoopBeginNode extends AbstractMergeNode implements IterableNo
         return unswitches;
     }
 
+    public int splits() {
+        return splits;
+    }
+
     public void incrementUnswitches() {
         unswitches++;
+    }
+
+    public void incrementSplits() {
+        splits++;
     }
 
     public int getInversionCount() {

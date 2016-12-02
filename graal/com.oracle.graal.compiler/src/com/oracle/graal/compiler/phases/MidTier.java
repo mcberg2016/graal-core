@@ -24,15 +24,20 @@ package com.oracle.graal.compiler.phases;
 
 import static com.oracle.graal.compiler.common.GraalOptions.ConditionalElimination;
 import static com.oracle.graal.compiler.common.GraalOptions.ImmutableCode;
+import static com.oracle.graal.compiler.common.GraalOptions.LoopInsertPrePost;
 import static com.oracle.graal.compiler.common.GraalOptions.OptDeoptimizationGrouping;
 import static com.oracle.graal.compiler.common.GraalOptions.OptEliminatePartiallyRedundantGuards;
 import static com.oracle.graal.compiler.common.GraalOptions.OptFloatingReads;
+import static com.oracle.graal.compiler.common.GraalOptions.OptLoopTransform;
 import static com.oracle.graal.compiler.common.GraalOptions.OptPushThroughPi;
 import static com.oracle.graal.compiler.common.GraalOptions.OptReadElimination;
 import static com.oracle.graal.compiler.common.GraalOptions.ReassociateInvariants;
 import static com.oracle.graal.compiler.common.GraalOptions.UseGraalInstrumentation;
 import static com.oracle.graal.compiler.common.GraalOptions.VerifyHeapAtReturn;
 
+import com.oracle.graal.loop.DefaultLoopPolicies;
+import com.oracle.graal.loop.LoopPolicies;
+import com.oracle.graal.loop.phases.LoopInsertPrePostLoopsPhase;
 import com.oracle.graal.loop.phases.LoopSafepointEliminationPhase;
 import com.oracle.graal.loop.phases.ReassociateInvariantPhase;
 import com.oracle.graal.nodes.spi.LoweringTool;
@@ -62,6 +67,13 @@ public class MidTier extends PhaseSuite<MidTierContext> {
         CanonicalizerPhase canonicalizer = new CanonicalizerPhase();
         if (ImmutableCode.getValue()) {
             canonicalizer.disableReadCanonicalization();
+        }
+
+        LoopPolicies loopPolicies = createLoopPolicies();
+        if (OptLoopTransform.getValue()) {
+            if (LoopInsertPrePost.getValue()) {
+                appendPhase(new LoopInsertPrePostLoopsPhase(canonicalizer, loopPolicies));
+            }
         }
 
         if (OptPushThroughPi.getValue()) {
@@ -124,5 +136,9 @@ public class MidTier extends PhaseSuite<MidTierContext> {
         }
 
         appendPhase(canonicalizer);
+    }
+
+    public LoopPolicies createLoopPolicies() {
+        return new DefaultLoopPolicies();
     }
 }
